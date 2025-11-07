@@ -89,6 +89,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let cameraConfigs = [];
     let currentCameraConfigIndex = 0;
     let isAnimatingCamera = false;
+    let beamMaterial = null;
 
     const cameraAnimationFrames = 90;
     const cameraEase = new BABYLON.CubicEase();
@@ -218,6 +219,46 @@ document.addEventListener("DOMContentLoaded", () => {
       currentCameraConfigIndex = 0;
       isAnimatingCamera = false;
       updateCameraButtonState();
+    };
+
+    const getBeamMaterial = () => {
+      if (!beamMaterial) {
+        beamMaterial = new BABYLON.PBRMaterial("beamMaterial", scene);
+        beamMaterial.albedoColor = new BABYLON.Color3(1, 0, 0);
+      }
+      return beamMaterial;
+    };
+
+    const applyBeamMaterialToNode = () => {
+      const targetNode =
+        typeof scene.getTransformNodeByName === "function"
+          ? scene.getTransformNodeByName("400_BEAM")
+          : null;
+      
+      // const resolvedNode = targetNode || (typeof scene.getNodeByName === "function" ? scene.getNodeByName("400_BEAM") : null);
+      // if (!resolvedNode || typeof resolvedNode.getChildMeshes !== "function") {
+      //   return;
+      // }
+      const resolvedNode =scene.getTransformNodeByName("400_BEAM");
+
+      console.log(targetNode);
+
+      const meshesToUpdate = resolvedNode.getChildMeshes(true);
+
+      console.log(`Found ${meshesToUpdate.length} meshes under 400_BEAM.`);
+
+      if (!Array.isArray(meshesToUpdate) || !meshesToUpdate.length) {
+        return;
+      }
+
+
+
+      const material = getBeamMaterial();
+      meshesToUpdate.forEach((mesh) => {
+        if (mesh instanceof BABYLON.AbstractMesh && !(mesh instanceof BABYLON.InstancedMesh)) {
+          mesh.material = material;
+        }
+      });
     };
 
     const applyCameraConfig = (config) => {
@@ -444,6 +485,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const bounds = computeBoundsForMeshes(targetMeshes);
         setupCameraConfigs(bounds);
         currentModelIndex = index;
+        applyBeamMaterialToNode();
         console.log(modelName);
         loadSucceeded = true;
       } catch (error) {
