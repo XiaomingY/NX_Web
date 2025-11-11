@@ -24,7 +24,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const createScene = async () => {
     const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color3(0.04, 0.04, 0.07);
+    scene.clearColor = BABYLON.Color3.White();
     scene.imageProcessingConfiguration.toneMappingEnabled = true;
     scene.imageProcessingConfiguration.exposure = 1.15;
     scene.environmentIntensity = 1.0;
@@ -57,17 +57,24 @@ document.addEventListener("DOMContentLoaded", () => {
       skyboxSize: 250,
       groundSize: 200,
       enableGroundMirror: false,
+      skyboxColor: BABYLON.Color3.White(),
+      groundColor: BABYLON.Color3.White(),
     });
 
-    if (environment?.skybox?.material) {
-      environment.skybox.material.microSurface = 0.6;
-      environment.skybox.material.backFaceCulling = false;
+    if (environment?.skybox) {
+      const whiteSkyboxMaterial = new BABYLON.StandardMaterial("whiteSkyboxMat", scene);
+      whiteSkyboxMaterial.disableLighting = true;
+      whiteSkyboxMaterial.diffuseColor = BABYLON.Color3.White();
+      whiteSkyboxMaterial.specularColor = BABYLON.Color3.Black();
+      whiteSkyboxMaterial.emissiveColor = BABYLON.Color3.White();
+      environment.skybox.material = whiteSkyboxMaterial;
+      environment.skybox.infiniteDistance = true;
     }
 
     if (environment?.ground) {
       const groundMat = new BABYLON.PBRMaterial("groundMat", scene);
-      groundMat.albedoColor = new BABYLON.Color3(0.12, 0.14, 0.18);
-      groundMat.roughness = 0.9;
+      groundMat.albedoColor = BABYLON.Color3.White();
+      groundMat.roughness = 1.0;
       groundMat.metallic = 0.0;
       environment.ground.material = groundMat;
       environment.ground.receiveShadows = true;
@@ -80,6 +87,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const sun = new BABYLON.DirectionalLight("sunLight", new BABYLON.Vector3(-0.4, -1, -0.6), scene);
     sun.position = new BABYLON.Vector3(60, 120, 80);
     sun.intensity = 1.6;
+    sun.diffuse = BABYLON.Color3.White();
+    sun.specular = BABYLON.Color3.White();
     sun.shadowMinZ = 1;
     sun.shadowMaxZ = 500;
 
@@ -107,6 +116,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let isLevelViewActive = false;
     let isLevelTransitioning = false;
     const levelCameraLabel = "Level1_ZoomIn";
+
+    const edgeColor = new BABYLON.Color4(0, 0, 0, 1);
 
     const cameraAnimationFrames = 90;
     const cameraEase = new BABYLON.CubicEase();
@@ -193,6 +204,17 @@ document.addEventListener("DOMContentLoaded", () => {
         return mesh.getTotalVertices() > 0;
       }
       return true;
+    };
+
+    const enableEdgesForMeshes = (meshes = []) => {
+      meshes.forEach((mesh) => {
+        if (!isRenderableMesh(mesh) || typeof mesh.enableEdgesRendering !== "function") {
+          return;
+        }
+        mesh.enableEdgesRendering();
+        mesh.edgesWidth = 4.0;
+        mesh.edgesColor = edgeColor;
+      });
     };
 
     const clearShadowCasters = () => {
@@ -742,6 +764,7 @@ document.addEventListener("DOMContentLoaded", () => {
         updateRoofButtonState();
 
         const renderableMeshes = result.meshes.filter((mesh) => isRenderableMesh(mesh));
+        enableEdgesForMeshes(result.meshes);
 
         renderableMeshes.forEach((mesh) => {
           mesh.receiveShadows = true;
