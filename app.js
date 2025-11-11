@@ -684,23 +684,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return collected;
     };
 
-    const collectLevelMeshes = () => {
-      const node = resolveLevelNode();
-      if (!node) {
-        return [];
-      }
-      if (typeof node.getChildMeshes === "function") {
-        const meshes = node.getChildMeshes(true);
-        if (Array.isArray(meshes) && meshes.length) {
-          return meshes;
-        }
-      }
-      return collectMeshesFromHierarchy(node);
-    };
-
-    const hideLevelMeshes = () => {
-      const levelMeshes = collectLevelMeshes();
-      levelMeshes.forEach((mesh) => {
+    const hideTextMeshes = () => {
+      const textMeshes = collectTextMeshesUnderTextNode();
+      textMeshes.forEach((mesh) => {
         if (!mesh) {
           return;
         }
@@ -747,8 +733,9 @@ document.addEventListener("DOMContentLoaded", () => {
         label: levelCameraLabel,
         alpha: BABYLON.Tools.ToRadians(-60),
         beta: BABYLON.Tools.ToRadians(45),
-        radius: (bounds.radius || 1) * 1,
+        radius: (bounds.radius || 1) * 4,
         target,
+        fov: BABYLON.Tools.ToRadians(15),
       };
       const centerString =
         typeof bounds.center?.toString === "function"
@@ -777,6 +764,9 @@ document.addEventListener("DOMContentLoaded", () => {
       camera.beta = config.beta;
       camera.radius = config.radius;
       camera.setTarget(config.target.clone());
+      if (typeof config.fov === "number") {
+        camera.fov = config.fov;
+      }
       camera.inertialAlphaOffset = 0;
       camera.inertialBetaOffset = 0;
       camera.inertialRadiusOffset = 0;
@@ -841,6 +831,22 @@ document.addEventListener("DOMContentLoaded", () => {
           )
         );
 
+        if (typeof config.fov === "number") {
+          animations.push(
+            BABYLON.Animation.CreateAndStartAnimation(
+              "fovAnim",
+              camera,
+              "fov",
+              60,
+              cameraAnimationFrames,
+              camera.fov,
+              config.fov,
+              BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT,
+              cameraEase
+            )
+          );
+        }
+
         const targetAnimatable = BABYLON.Animation.CreateAndStartAnimation(
           "targetAnim",
           camera,
@@ -883,6 +889,7 @@ document.addEventListener("DOMContentLoaded", () => {
       alpha: camera.alpha,
       beta: camera.beta,
       radius: camera.radius,
+      fov: camera.fov,
       target: camera.target.clone(),
     });
 
@@ -936,14 +943,15 @@ document.addEventListener("DOMContentLoaded", () => {
       updateRoofButtonState();
 
       try {
+        if (!targetState) {
+          levelReturnCameraConfig = null;
+          disposeTextRenderers();
+        }
         await Promise.all([animateCameraTo(targetCameraConfig), animateRoofLift(targetState)]);
         isLevelViewActive = targetState;
         isRoofRaised = targetState;
         if (targetState) {
           await ensureTextRenderersReady();
-        } else {
-          levelReturnCameraConfig = null;
-          disposeTextRenderers();
         }
       } finally {
         isRoofAnimating = false;
@@ -994,35 +1002,41 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       //const baseTarget = bounds.center.add(new BABYLON.Vector3(0, bounds.height * 0.1, 0));
+      console.log(bounds.center.add(new BABYLON.Vector3(0, bounds.height * 0.1, 0)));
       const baseTarget = new BABYLON.Vector3(0, 0, 0);
+      const rigFov = BABYLON.Tools.ToRadians(20);
       cameraConfigs = [
         {
           label: "Perspective",
-          alpha: BABYLON.Tools.ToRadians(-60),
+          alpha: BABYLON.Tools.ToRadians(-45),
           beta: BABYLON.Tools.ToRadians(60),
-          radius: bounds.radius * 2,
+          radius: bounds.radius * 4.5,
           target: baseTarget.clone(),
+          fov: rigFov,
         },
         {
           label: "Front",
           alpha: BABYLON.Tools.ToRadians(0),
           beta: BABYLON.Tools.ToRadians(75),
-          radius: bounds.radius * 2,
+          radius: bounds.radius * 4.5,
           target: baseTarget.clone(),
+          fov: rigFov,
         },
         {
           label: "Side",
           alpha: BABYLON.Tools.ToRadians(90),
           beta: BABYLON.Tools.ToRadians(65),
-          radius: bounds.radius * 2,
+          radius: bounds.radius * 4.5,
           target: baseTarget.clone(),
+          fov: rigFov,
         },
         {
           label: "Top",
           alpha: BABYLON.Tools.ToRadians(0),
           beta: BABYLON.Tools.ToRadians(0),
-          radius: bounds.radius * 2,
+          radius: bounds.radius * 5,
           target: baseTarget.clone(),
+          fov: BABYLON.Tools.ToRadians(20),
         },
       ];
 
@@ -1067,7 +1081,7 @@ document.addEventListener("DOMContentLoaded", () => {
         logNodesUnderRoot(modelName);
         updateRoofButtonState();
         updateLevelCameraConfig(modelName);
-        hideLevelMeshes();
+        hideTextMeshes();
         updateRoofButtonState();
 
         const renderableMeshes = result.meshes.filter((mesh) => isRenderableMesh(mesh));

@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "babylonjs-addons": "^8.36.1"
+  }
+}
