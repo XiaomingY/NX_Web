@@ -86,14 +86,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const sun = new BABYLON.DirectionalLight("sunLight", new BABYLON.Vector3(-0.4, -1, -0.6), scene);
     sun.position = new BABYLON.Vector3(60, 120, 80);
-    sun.intensity = 1.6;
+    sun.intensity = 2.6;
     sun.diffuse = BABYLON.Color3.White();
     sun.specular = BABYLON.Color3.White();
     sun.shadowMinZ = 1;
     sun.shadowMaxZ = 500;
 
     const fillLight = new BABYLON.HemisphericLight("fillLight", new BABYLON.Vector3(0, 1, 0), scene);
-    fillLight.intensity = 0.55;
+    fillLight.intensity = 0.2;
 
     const rootUrl = "Models/";
 
@@ -118,6 +118,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const levelCameraLabel = "Level1_ZoomIn";
 
     const edgeColor = new BABYLON.Color4(0, 0, 0, 1);
+    const textNodeAliases = ["text"];
+    const textRendererColor = new BABYLON.Color4(2, 2, 2, 1);
+    const textRendererUpVector = BABYLON.Vector3.Up();
+    let textRendererObserver = null;
+    let textRendererEntries = [];
+    let textFontAssetPromise = null;
 
     const cameraAnimationFrames = 90;
     const cameraEase = new BABYLON.CubicEase();
@@ -231,6 +237,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!currentImport) {
         return;
       }
+      disposeTextRenderers();
       currentImport.animationGroups?.forEach((group) => group.dispose());
       currentImport.meshes?.forEach((mesh) => {
         if (mesh && !mesh.isDisposed()) {
@@ -366,6 +373,215 @@ document.addEventListener("DOMContentLoaded", () => {
       return levelNode;
     };
 
+    const findTextNodeUnderLevel = () => {
+      const level = resolveLevelNode();
+      if (!level) {
+        return null;
+      }
+      const matchesAlias = (node) => {
+        if (!node) {
+          return false;
+        }
+        const normalizedName = normalizeNodeName(node.name);
+        const normalizedId = normalizeNodeName(node.id);
+        return textNodeAliases.some(
+          (alias) =>
+            normalizedName === alias ||
+            normalizedId === alias ||
+            normalizedName.endsWith(alias) ||
+            normalizedId.endsWith(alias)
+        );
+      };
+
+      if (matchesAlias(level)) {
+        return level;
+      }
+
+      const descendants =
+        typeof level.getDescendants === "function" ? level.getDescendants(false) : level.getChildren?.() || [];
+      if (!Array.isArray(descendants) || !descendants.length) {
+        return null;
+      }
+      return descendants.find((node) => matchesAlias(node)) || null;
+    };
+
+    const collectTextMeshesUnderTextNode = () => {
+      const textNode = findTextNodeUnderLevel();
+      if (!textNode) {
+        return [];
+      }
+
+      const meshes = [];
+      const addIfMesh = (node) => {
+        if (isRenderableMesh(node)) {
+          meshes.push(node);
+        }
+      };
+
+      addIfMesh(textNode);
+
+      const descendants =
+        typeof textNode.getDescendants === "function" ? textNode.getDescendants(false) : textNode.getChildren?.() || [];
+      if (Array.isArray(descendants)) {
+        descendants.forEach(addIfMesh);
+      }
+
+      return meshes;
+    };
+
+    const updateTextRendererEntryTransform = (entry, cameraPosition) => {
+      const { mesh, textRenderer, localOffset, scaleVector } = entry;
+      if (!mesh || mesh.isDisposed?.() || !textRenderer || !localOffset || !scaleVector) {
+        return;
+      }
+      const parentWorld = mesh.getWorldMatrix?.();
+      if (!parentWorld) {
+        return;
+      }
+      const worldPosition = BABYLON.Vector3.TransformCoordinates(localOffset, parentWorld);
+      const direction = cameraPosition.subtract(worldPosition);
+      if (!isFinite(direction.x) || !isFinite(direction.y) || !isFinite(direction.z)) {
+        return;
+      }
+      if (direction.lengthSquared() < 1e-5) {
+        direction.x = 0;
+        direction.y = 0;
+        direction.z = 1;
+      } else {
+        direction.normalize();
+      }
+      const rotation = BABYLON.Quaternion.FromLookDirectionLH(direction, textRendererUpVector);
+      const worldMatrix = BABYLON.Matrix.Compose(scaleVector, rotation, worldPosition);
+      const parentInverse = BABYLON.Matrix.Invert(parentWorld);
+      const localMatrix = worldMatrix.multiply(parentInverse);
+      textRenderer.transformMatrix = localMatrix;
+    };
+
+    const disposeTextRenderers = () => {
+      if (textRendererEntries.length) {
+        textRendererEntries.forEach(({ textRenderer, mesh }) => {
+          try {
+            textRenderer?.dispose?.();
+          } catch (error) {
+            console.warn(`[TextRenderer] Failed to dispose renderer for "${mesh?.name || "unnamed"}".`, error);
+          }
+        });
+        textRendererEntries = [];
+      }
+      if (textRendererObserver) {
+        scene.onAfterRenderObservable.remove(textRendererObserver);
+        textRendererObserver = null;
+      }
+      if (scene.metadata?.textRendererEntries) {
+        delete scene.metadata.textRendererEntries;
+      }
+    };
+
+    const loadTextFontAsset = async () => {
+      if (!window.ADDONS?.FontAsset) {
+        console.warn("[TextRenderer] Babylon.js addons FontAsset is unavailable. Labels will be skipped.");
+        return null;
+      }
+      if (!textFontAssetPromise) {
+        textFontAssetPromise = (async () => {
+          const response = await fetch("https://assets.babylonjs.com/fonts/roboto-regular.json");
+          if (!response.ok) {
+            throw new Error(`Failed to load font definition (status ${response.status}).`);
+          }
+          const definition = await response.text();
+          return new ADDONS.FontAsset(definition, "https://assets.babylonjs.com/fonts/roboto-regular.png");
+        })();
+      }
+
+      try {
+        return await textFontAssetPromise;
+      } catch (error) {
+        console.error("[TextRenderer] Unable to initialize font asset.", error);
+        textFontAssetPromise = null;
+        return null;
+      }
+    };
+
+    const ensureTextRenderersReady = async () => {
+      if (!isLevelViewActive) {
+        return;
+      }
+      if (!textRendererEntries.length) {
+        const textMeshes = collectTextMeshesUnderTextNode();
+        if (!textMeshes.length) {
+          return;
+        }
+        if (!window.ADDONS?.TextRenderer?.CreateTextRendererAsync) {
+          console.warn("[TextRenderer] Babylon.js addons TextRenderer is unavailable. Labels will be skipped.");
+          return;
+        }
+        const fontAsset = await loadTextFontAsset();
+        if (!fontAsset) {
+          return;
+        }
+
+        const createdEntries = [];
+        for (const mesh of textMeshes) {
+          if (!mesh) {
+            continue;
+          }
+          mesh.isVisible = false;
+          try {
+            const renderer = await ADDONS.TextRenderer.CreateTextRendererAsync(fontAsset, engine);
+            renderer.addParagraph(mesh.name || "Label");
+            renderer.color = textRendererColor;
+            renderer.ignoreDepthBuffer = true;
+            const boundingInfo = mesh.getBoundingInfo?.();
+            const localCenter = boundingInfo?.boundingBox?.center?.clone() || BABYLON.Vector3.Zero();
+            const extendSize = boundingInfo?.boundingBox?.extendSize || BABYLON.Vector3.One();
+            const labelHeight = Math.max(extendSize.y, 0.5) + 0.25;
+            const localOffset = new BABYLON.Vector3(localCenter.x, localCenter.y + labelHeight, localCenter.z);
+            const maxHorizontal = Math.max(extendSize.x, extendSize.z);
+            const uniformScale = Math.max(maxHorizontal * 0.15, 0.5);
+            const scaleVector = new BABYLON.Vector3(uniformScale, uniformScale, uniformScale);
+            renderer.transformMatrix = BABYLON.Matrix.Compose(scaleVector, BABYLON.Quaternion.Identity(), localOffset);
+            renderer.parent = mesh;
+            createdEntries.push({ mesh, textRenderer: renderer, localOffset, scaleVector });
+          } catch (error) {
+            console.error(`[TextRenderer] Failed to create renderer for "${mesh?.name || "unnamed"}".`, error);
+          }
+        }
+
+        if (!createdEntries.length) {
+          return;
+        }
+        textRendererEntries = createdEntries;
+        scene.metadata = scene.metadata || {};
+        scene.metadata.textRendererEntries = textRendererEntries;
+      }
+
+      if (!textRendererObserver) {
+        textRendererObserver = scene.onAfterRenderObservable.add(() => {
+          if (!isLevelViewActive || !textRendererEntries.length) {
+            return;
+          }
+          const activeCamera = scene.activeCamera || camera;
+          if (!activeCamera) {
+            return;
+          }
+          const cameraWorldPosition = activeCamera.globalPosition || activeCamera.position;
+          if (!cameraWorldPosition) {
+            return;
+          }
+          const viewMatrix = activeCamera.getViewMatrix();
+          const projectionMatrix = activeCamera.getProjectionMatrix();
+          textRendererEntries.forEach((entry) => {
+            try {
+              updateTextRendererEntryTransform(entry, cameraWorldPosition);
+              entry.textRenderer.render(viewMatrix, projectionMatrix);
+            } catch (error) {
+              console.error("[TextRenderer] Failed to render label.", error);
+            }
+          });
+        });
+      }
+    };
+
     const resetLevelState = () => {
       levelNode = null;
       levelBounds = null;
@@ -466,6 +682,33 @@ document.addEventListener("DOMContentLoaded", () => {
 
       traverse(rootNode);
       return collected;
+    };
+
+    const collectLevelMeshes = () => {
+      const node = resolveLevelNode();
+      if (!node) {
+        return [];
+      }
+      if (typeof node.getChildMeshes === "function") {
+        const meshes = node.getChildMeshes(true);
+        if (Array.isArray(meshes) && meshes.length) {
+          return meshes;
+        }
+      }
+      return collectMeshesFromHierarchy(node);
+    };
+
+    const hideLevelMeshes = () => {
+      const levelMeshes = collectLevelMeshes();
+      levelMeshes.forEach((mesh) => {
+        if (!mesh) {
+          return;
+        }
+        mesh.isVisible = false;
+        if (typeof mesh.setEnabled === "function") {
+          mesh.setEnabled(false);
+        }
+      });
     };
 
     const updateLevelCameraConfig = (modelName) => {
@@ -649,6 +892,68 @@ document.addEventListener("DOMContentLoaded", () => {
       cameraConfigs[0] ||
       captureCurrentCameraState();
 
+    const toggleLevelView = async (desiredState = null) => {
+      if (isRoofAnimating || isLevelTransitioning || isAnimatingCamera || isLoadingModel) {
+        return false;
+      }
+
+      const targetState = typeof desiredState === "boolean" ? desiredState : !isLevelViewActive;
+      if (targetState === isLevelViewActive) {
+        return false;
+      }
+
+      const hasRoof = !!resolveRoofNode();
+      if (!hasRoof) {
+        console.warn('[Level1] Cannot toggle Level 1 view because no "Roof" node is present.');
+        updateRoofButtonState();
+        return false;
+      }
+
+      if (!levelCameraConfig) {
+        console.warn("[Level1] Level 1 camera is unavailable for the current model.");
+        updateRoofButtonState();
+        return false;
+      }
+
+      let targetCameraConfig;
+      if (targetState) {
+        levelReturnCameraConfig = captureCurrentCameraState();
+        targetCameraConfig = levelCameraConfig;
+        console.log(
+          `[Level1] Entering Level 1 view "${levelCameraLabel}" targeting ${
+            levelCameraConfig.target.toString?.() || JSON.stringify(levelCameraConfig.target)
+          }.`
+        );
+      } else {
+        targetCameraConfig = resolveFallbackCameraConfig();
+        console.log(
+          `[Level1] Exiting Level 1 view. Returning to "${targetCameraConfig.label || "previous"}" camera.`
+        );
+      }
+
+      isLevelTransitioning = true;
+      isRoofAnimating = true;
+      updateRoofButtonState();
+
+      try {
+        await Promise.all([animateCameraTo(targetCameraConfig), animateRoofLift(targetState)]);
+        isLevelViewActive = targetState;
+        isRoofRaised = targetState;
+        if (targetState) {
+          await ensureTextRenderersReady();
+        } else {
+          levelReturnCameraConfig = null;
+          disposeTextRenderers();
+        }
+      } finally {
+        isRoofAnimating = false;
+        isLevelTransitioning = false;
+        updateRoofButtonState();
+      }
+
+      return true;
+    };
+
     const computeBoundsForMeshes = (meshes) => {
       if (!meshes.length) {
         return null;
@@ -744,6 +1049,7 @@ document.addEventListener("DOMContentLoaded", () => {
       isLoadingModel = true;
       nextModelButton.disabled = true;
       nextModelButton.textContent = "Loading...";
+      disposeTextRenderers();
       resetRoofState();
       updateRoofButtonState();
       resetLevelState();
@@ -761,10 +1067,13 @@ document.addEventListener("DOMContentLoaded", () => {
         logNodesUnderRoot(modelName);
         updateRoofButtonState();
         updateLevelCameraConfig(modelName);
+        hideLevelMeshes();
         updateRoofButtonState();
 
         const renderableMeshes = result.meshes.filter((mesh) => isRenderableMesh(mesh));
         enableEdgesForMeshes(result.meshes);
+
+        const hiddenTextMeshIds = new Set(textRendererEntries.map(({ mesh }) => mesh?.uniqueId).filter((id) => id !== undefined));
 
         renderableMeshes.forEach((mesh) => {
           mesh.receiveShadows = true;
@@ -803,6 +1112,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (isAnimatingCamera || !cameraConfigs.length) {
         return;
       }
+      if (isLevelViewActive) {
+        const exited = await toggleLevelView(false);
+        if (!exited) {
+          return;
+        }
+      }
       const nextIndex = (currentCameraConfigIndex + 1) % cameraConfigs.length;
       currentCameraConfigIndex = nextIndex;
       await animateCameraTo(cameraConfigs[nextIndex]);
@@ -810,55 +1125,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (roofButton) {
       roofButton.addEventListener("click", async () => {
-        if (isRoofAnimating || isLevelTransitioning || isAnimatingCamera || isLoadingModel) {
-          return;
-        }
-        const hasRoof = !!resolveRoofNode();
-        if (!hasRoof) {
-          console.warn('[Level1] Cannot toggle Level 1 view because no "Roof" node is present.');
-          updateRoofButtonState();
-          return;
-        }
-        if (!levelCameraConfig) {
-          console.warn("[Level1] Level 1 camera is unavailable for the current model.");
-          updateRoofButtonState();
-          return;
-        }
-
-        const enteringLevelView = !isLevelViewActive;
-        let targetCameraConfig;
-
-        if (enteringLevelView) {
-          levelReturnCameraConfig = captureCurrentCameraState();
-          targetCameraConfig = levelCameraConfig;
-          console.log(
-            `[Level1] Entering Level 1 view "${levelCameraLabel}" targeting ${
-              levelCameraConfig.target.toString?.() || JSON.stringify(levelCameraConfig.target)
-            }.`
-          );
-        } else {
-          targetCameraConfig = resolveFallbackCameraConfig();
-          console.log(
-            `[Level1] Exiting Level 1 view. Returning to "${targetCameraConfig.label || "previous"}" camera.`
-          );
-        }
-
-        isLevelTransitioning = true;
-        isRoofAnimating = true;
-        updateRoofButtonState();
-
-        try {
-          await Promise.all([animateCameraTo(targetCameraConfig), animateRoofLift(enteringLevelView)]);
-          isLevelViewActive = enteringLevelView;
-          isRoofRaised = enteringLevelView;
-          if (!enteringLevelView) {
-            levelReturnCameraConfig = null;
-          }
-        } finally {
-          isRoofAnimating = false;
-          isLevelTransitioning = false;
-          updateRoofButtonState();
-        }
+        await toggleLevelView();
       });
     }
 
