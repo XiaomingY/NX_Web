@@ -52,7 +52,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const environment = scene.createDefaultEnvironment({
       createSkybox: true,
-      createGround: false,
+      createGround: true,
       skyboxSize: 250,
       groundSize: 200,
       enableGroundMirror: false,
@@ -202,6 +202,41 @@ document.addEventListener("DOMContentLoaded", () => {
       currentImport = null;
     };
 
+    const logNodesUnderRoot = (modelName) => {
+      const rootNode =
+        scene.getTransformNodeByName?.("__root__") ||
+        scene.getNodeByName?.("__root__");
+      if (!rootNode) {
+        console.warn(`No "__root__" node found for ${modelName}.`);
+        return;
+      }
+
+      const maxDepth = 4; // __root__ + three transform layers + meshes
+      const describeNode = (node, depth = 0) => {
+        if (!node) {
+          return null;
+        }
+        const info = {
+          name: node.name || node.id || `unnamed-${node.uniqueId ?? "?"}`,
+          type: typeof node.getClassName === "function" ? node.getClassName() : node.constructor?.name || "Node",
+        };
+
+        const children = typeof node.getChildren === "function" ? node.getChildren() : [];
+        if (!children.length || depth >= maxDepth) {
+          if (children.length && depth >= maxDepth) {
+            info.children = `+${children.length} more`;
+          }
+          return info;
+        }
+
+        info.children = children.map((child) => describeNode(child, depth + 1)).filter(Boolean);
+        return info;
+      };
+
+      const hierarchy = describeNode(rootNode);
+      console.log(`Hierarchy under "__root__" for "${modelName}":\n${JSON.stringify(hierarchy, null, 2)}`);
+    };
+
     const updateCameraButtonState = () => {
       if (!cameraButton) {
         return;
@@ -212,6 +247,29 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       cameraButton.disabled = false;
+    };
+
+    const liftTransformNode = (nodeName, deltaY = 3) => {
+      const node =
+        scene.getTransformNodeByName?.(nodeName) ||
+        scene.getNodeByName?.(nodeName);
+
+      if (!node) {
+        console.warn(`Transform node "${nodeName}" not found; skipping lift.`);
+        return;
+      }
+
+      if (!node.position) {
+        node.position = BABYLON.Vector3.Zero();
+      }
+
+      node.position.y += deltaY;
+
+      const childMeshes =
+        typeof node.getChildMeshes === "function" ? node.getChildMeshes(true) : [];
+      console.log(
+        `Lifted "${nodeName}" and ${childMeshes.length} child meshes by ${deltaY} units.`
+      );
     };
 
     const resetCameraConfigs = () => {
@@ -473,6 +531,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const result = await BABYLON.SceneLoader.ImportMeshAsync("", rootUrl, modelName, scene);
         currentImport = result;
+        logNodesUnderRoot(modelName);
+        liftTransformNode("400_TIMBER_CLADD", 3);
 
         const renderableMeshes = result.meshes.filter((mesh) => isRenderableMesh(mesh));
 
